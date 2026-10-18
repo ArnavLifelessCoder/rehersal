@@ -245,8 +245,9 @@ class InterviewSession:
             frame = pcm[i : i + frame_len]
             if frame.size < frame_len // 2:
                 break
-            self._asr.feed(frame)
-            event = self._endpointer.push(self._vad.is_speech(frame))
+            voiced = self._vad.is_speech(frame)
+            self._asr.feed(frame, is_speech=voiced)
+            event = self._endpointer.push(voiced)
             if event:
                 await self._events.put((event.kind, {"speech_ms": event.speech_ms}))
 
@@ -471,6 +472,7 @@ class InterviewSession:
             specificity=round(signals.correctness_signal, 3),
             words=signals.word_count,
             weakest=signals.weakest_axis(),
+            asr="partial" if self._asr.reused_partial else "final",
             probes_used=self.state.probes_on_current,
             question_n=self.state.questions_asked,
         )

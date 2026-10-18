@@ -111,3 +111,104 @@ class TestLoopingTranscriptIsNotAnAnswer:
         await wait_for(rec, "noise_discarded", timeout=6.0)
         assert not rec.of("turn_scored")
         await s.close()
+
+
+class _CountingASR(MockASR):
+    def __init__(self, delay_s: float = 0.0) -> None:
+        super().__init__()
+        self.delay_s = delay_s
+        self.calls: list[bool] = []   # is_final per call
+
+    async def transcribe(self, audio, *, is_final):
+        self.calls.append(is_final)
+        await asyncio.sleep(self.delay_s)
+        return Transcript(f"heard {audio.size}", is_final, 0.6)
+
+
+def _feed(stream, voiced_s: float, silent_s: float) -> None:
+    from app.audio.asr import StreamingASR  # noqa: F401
+    frame = 320
+    for _ in range(int(voiced_s * 16_000) // frame):
+        stream.feed(np.full(frame, 0.1, np.float32), is_speech=True)
+    for _ in range(int(silent_s * 16_000) // frame):
+        stream.feed(np.zeros(frame, np.float32), is_speech=False)
+
+
+class TestFlushReusesCoveringPartial:
+    """The final flush must not re-decode audio a partial already heard."""
+
+    async def test_partial_past_end_of_speech_is_reused(self):
+        from app.audio.asr import StreamingASR
+
+        asr = _CountingASR()
+        st = StreamingASR(asr, 16_000)
+        _feed(st, voiced_s=3.0, silent_s=1.0)
+        await st.maybe_partial()
+        out = await st.flush()
+        assert asr.calls == [False], "flush decoded again despite a covering partial"
+        assert st.reused_partial and out.is_final and out.text
+
+    async def test_partial_before_end_of_speech_forces_a_decode(self):
+        from app.audio.asr import StreamingASR
+
+        asr = _CountingASR()
+        st = StreamingASR(asr, 16_000)
+        _feed(st, voiced_s=2.0, silent_s=0.0)
+        await st.maybe_partial()          # heard only part of the answer
+        _feed(st, voiced_s=1.0, silent_s=1.0)
+        await st.flush()
+        assert asr.calls == [False, True]
+        assert not st.reused_partial
+
+    async def test_flush_waits_for_an_inflight_covering_partial(self):
+        from app.audio.asr import StreamingASR
+
+        asr = _CountingASR(delay_s=0.2)
+        st = StreamingASR(asr, 16_000)
+        _feed(st, voiced_s=3.0, silent_s=1.0)
+        partial = asyncio.create_task(st.maybe_partial())
+        await asyncio.sleep(0.01)
+        await st.flush()
+        await partial
+        assert asr.calls == [False]
+
+    async def test_partial_from_previous_turn_is_never_reused(self):
+        from app.audio.asr import StreamingASR
+
+        asr = _CountingASR(delay_s=0.1)
+        st = StreamingASR(asr, 16_000)
+        _feed(st, voiced_s=3.0, silent_s=1.0)
+        stale = asyncio.create_task(st.maybe_partial())
+        await asyncio.sleep(0.01)
+        st.reset()                        # turn ended mid-decode
+        await stale
+        _feed(st, voiced_s=1.0, silent_s=1.0)
+        await st.flush()
+        assert asr.calls[-1] is True, "a previous turn's partial stood in for this one"
+
+    async def test_reuse_can_be_disabled(self):
+        from app.audio.asr import StreamingASR
+
+        asr = _CountingASR()
+        st = StreamingASR(asr, 16_000, reuse_partial=False)
+        _feed(st, voiced_s=3.0, silent_s=1.0)
+        await st.maybe_partial()
+        await st.flush()
+        assert asr.calls == [False, True]
+
+    async def test_finished_covering_partial_does_not_wait_on_a_running_one(self):
+        from app.audio.asr import StreamingASR
+
+        asr = _CountingASR()
+        st = StreamingASR(asr, 16_000, partial_interval_s=0.0)
+        _feed(st, voiced_s=3.0, silent_s=0.5)
+        await st.maybe_partial()                  # finished, covers end of speech
+        asr.delay_s = 2.0
+        _feed(st, voiced_s=0.0, silent_s=0.5)
+        running = asyncio.create_task(st.maybe_partial())
+        await asyncio.sleep(0.01)
+        t0 = time.perf_counter()
+        await st.flush()
+        assert time.perf_counter() - t0 < 0.5, "flush waited on a redundant partial"
+        assert asr.calls == [False, False]
+        running.cancel()

@@ -147,7 +147,11 @@ async def main(answers: int, host: str, answer_wav: str | None = None) -> int:
                 elif kind == "latency":
                     tm = msg["timings"]
                     flag = "OK " if tm["within_budget"] else "OVER"
-                    print(f"  latency {flag} {tm['total_ms']:.0f}ms / {tm['budget_ms']}ms")
+                    # total_ms starts when the endpointer fires: the deliberate
+                    # end-of-turn silence is excluded, and the budget with it.
+                    print(f"  latency {flag} {tm['total_ms']:.0f}ms / {tm['budget_ms']}ms "
+                          f"after end-of-turn silence (felt: {tm.get('perceived_ms', 0):.0f}ms "
+                          f"/ {tm.get('perceived_budget_ms', '?')}ms)")
                 elif kind == "report":
                     report = msg["report"]
                     return

@@ -188,7 +188,7 @@ Gaze is computed from head pose **and** eye-in-socket, not eye position alone �
 ```bash
 cd backend
 pip install pytest pytest-asyncio httpx
-python -m pytest -q            # 269 tests, ~35s
+python -m pytest -q            # 275 tests, ~50s
 ```
 
 The suite is not just unit tests. [`tests/test_e2e.py`](backend/tests/test_e2e.py) drives complete interviews through the real session actor — real VAD, real endpointing, real feature extraction, real state machine, real report builder — with only ASR and the LLM swapped for deterministic offline backends. That's what makes the offline fallbacks load-bearing rather than decorative: CI exercises the actual interview logic on every run.
@@ -299,7 +299,7 @@ backend/
     storage/
       models.py · store.py
       blobs.py           recordings + retention
-  tests/                 269 tests incl. full end-to-end interviews
+  tests/                 275 tests incl. full end-to-end interviews
   scripts/               smoke_interview.py — real WebSocket, real PCM, real noise
 frontend/
   src/lib/               audio.js (AudioWorklet) · vision.js (MediaPipe)

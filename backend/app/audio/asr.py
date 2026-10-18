@@ -226,26 +226,55 @@ def build_asr(backend: str, model: str, sample_rate: int) -> BaseASR:
 class StreamingASR:
     """Chunked partial decoding with a single-flight guard.
 
-    Partials fire on a fast cadence while the user talks; the final flush decodes the
-    whole utterance. `_busy` drops overlapping partial requests instead of queueing them.
+    Partials fire on a fast cadence while the user talks. `_busy` drops
+    overlapping partial requests instead of queueing them.
+
+    The final flush reuses the latest partial when that partial already heard
+    everything the candidate said. By the time the endpointer fires, a full
+    second or more of silence has passed -- several partial cycles -- so a
+    partial covering the end of speech almost always exists, and decoding the
+    same audio again just to say the same words was the single largest cost
+    in the turn: ~1s of Whisper on CPU against a 100ms budget. Only when no
+    partial covers the end of speech does the flush decode from scratch.
     """
 
-    def __init__(self, asr: BaseASR, sample_rate: int, partial_interval_s: float = 0.35) -> None:
+    # Audio past the last voiced frame a partial must have heard before its
+    # text can stand in for the final: soft word endings fall below the VAD.
+    COVER_MARGIN_S = 0.3
+
+    def __init__(
+        self,
+        asr: BaseASR,
+        sample_rate: int,
+        partial_interval_s: float = 0.35,
+        reuse_partial: bool = True,
+    ) -> None:
         self._asr = asr
         self._sr = sample_rate
         self._partial_interval = partial_interval_s
+        self._reuse_partial = reuse_partial
         self._buf: list[np.ndarray] = []
         self._samples = 0
         self._last_partial_at = 0.0
         self._busy = False
+        self._gen = 0                       # bumped on reset; stale partials check it
+        self._speech_end = 0                # samples fed up to the last voiced frame
+        self._partial: Transcript | None = None
+        self._partial_covers = 0            # samples the stored partial decoded
+        self._inflight_covers = 0           # samples the running partial is decoding
+        self._partial_done = asyncio.Event()
+        self._partial_done.set()
+        self.reused_partial = False         # whether the last flush skipped decoding
 
     @property
     def backend(self) -> str:
         return self._asr.name
 
-    def feed(self, frame: np.ndarray) -> None:
+    def feed(self, frame: np.ndarray, *, is_speech: bool = False) -> None:
         self._buf.append(frame)
         self._samples += frame.size
+        if is_speech:
+            self._speech_end = self._samples
 
     def duration_s(self) -> float:
         return self._samples / self._sr
@@ -257,6 +286,10 @@ class StreamingASR:
         self._buf.clear()
         self._samples = 0
         self._last_partial_at = 0.0
+        self._gen += 1
+        self._speech_end = 0
+        self._partial = None
+        self._partial_covers = 0
 
     async def maybe_partial(self) -> Transcript | None:
         now = self.duration_s()
@@ -264,12 +297,37 @@ class StreamingASR:
             return None
         self._last_partial_at = now
         self._busy = True
+        gen, audio = self._gen, self.audio()
+        self._inflight_covers = audio.size
+        self._partial_done.clear()
         try:
-            return await self._asr.transcribe(self.audio(), is_final=False)
+            result = await self._asr.transcribe(audio, is_final=False)
+            if gen == self._gen:
+                self._partial, self._partial_covers = result, audio.size
+            return result
         finally:
             self._busy = False
+            self._partial_done.set()
+
+    def _covers_speech(self, n_samples: int) -> bool:
+        return self._speech_end > 0 and n_samples >= self._speech_end + int(
+            self.COVER_MARGIN_S * self._sr
+        )
 
     async def flush(self) -> Transcript:
+        self.reused_partial = False
         if self._samples == 0:
             return Transcript("", True, 0.0)
+        if self._reuse_partial:
+            # A finished partial that heard the end of speech wins outright --
+            # one still running would only add more trailing silence. Failing
+            # that, a running partial that will cover it finishes sooner than
+            # a fresh decode would, and says the same thing.
+            if not (self._partial is not None and self._covers_speech(self._partial_covers)):
+                if self._busy and self._covers_speech(self._inflight_covers):
+                    await self._partial_done.wait()
+            if self._partial is not None and self._covers_speech(self._partial_covers):
+                self.reused_partial = True
+                p = self._partial
+                return Transcript(p.text, True, p.confidence)
         return await self._asr.transcribe(self.audio(), is_final=True)
