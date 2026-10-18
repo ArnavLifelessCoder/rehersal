@@ -1,0 +1,6 @@
+# Real streaming ASR + VAD. ~200MB of wheels, model weights downloaded on
+# first use (base.en ≈ 140MB). Without this the app uses MockASR.
+faster-whisper==1.1.1
+onnxruntime==1.20.1
+soundfile==0.13.0
+requests>=2.31.0   # faster-whisper's model download (via huggingface_hub) needs it

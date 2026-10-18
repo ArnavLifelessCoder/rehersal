@@ -1,0 +1,6 @@
+# Embedding relevance + trained rubric/delivery heads.
+# Without this, ContentScorer falls back to lexical overlap and DeliveryScorer
+# to the calibrated heuristic (both are real scorers, just weaker).
+sentence-transformers==3.3.1
+lightgbm==4.5.0
+scikit-learn==1.6.0

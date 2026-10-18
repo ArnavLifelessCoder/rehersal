@@ -1,0 +1,3 @@
+# Postgres instead of the default SQLite. Set REHEARSAL_DATABASE_URL.
+psycopg[binary]==3.2.3
+pgvector==0.3.6

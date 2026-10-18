@@ -1,0 +1,18 @@
+# --- core (required) -------------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+sqlalchemy==2.0.36
+numpy==2.2.1
+python-multipart==0.0.20
+httpx==0.28.1
+
+# --- optional adapters -----------------------------------------------------
+# Everything below is OPTIONAL. The app runs without any of it, using the
+# deterministic offline fallbacks in each adapter. Install what you need:
+#
+#   pip install -r requirements-asr.txt      # faster-whisper + silero VAD
+#   pip install -r requirements-scoring.txt  # sentence-transformers + lightgbm
+#   pip install -r requirements-llm.txt      # anthropic / openai clients
+#   pip install -r requirements-pg.txt       # postgres driver
